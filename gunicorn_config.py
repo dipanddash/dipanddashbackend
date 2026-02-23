@@ -1,38 +1,22 @@
-# Gunicorn Configuration File
-
 import multiprocessing
+import os
 
-# Server socket
-bind = "127.0.0.1:8000"
+# App Platform exposes the runtime port via PORT.
+bind = f"0.0.0.0:{os.getenv('PORT', '8080')}"
 backlog = 2048
 
-# Worker processes
-workers = multiprocessing.cpu_count() * 2 + 1
+# Reasonable worker default for small instances.
+workers = max(2, multiprocessing.cpu_count() * 2 + 1)
 worker_class = "sync"
 worker_connections = 1000
-timeout = 30
+timeout = 60
 keepalive = 2
 
-# Logging
-accesslog = "/var/www/dipanddash/logs/access.log"
-errorlog = "/var/www/dipanddash/logs/error.log"
+# Container logging should go to stdout/stderr.
+accesslog = "-"
+errorlog = "-"
 loglevel = "info"
 access_log_format = '%(h)s %(l)s %(u)s %(t)s "%(r)s" %(s)s %(b)s "%(f)s" "%(a)s"'
 
-# Process naming
-proc_name = "dipanddash"
-
-# Server mechanics
-daemon = False
-pidfile = None
-umask = 0
-user = None
-group = None
-tmp_upload_dir = None
-
-# SSL
-keyfile = None
-certfile = None
-
-# Application
-pythonpath = "/var/www/dipanddash/food"
+# Ensure Gunicorn knows which app to load when started with only -c.
+wsgi_app = "food.wsgi:application"
