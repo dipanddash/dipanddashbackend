@@ -59,7 +59,7 @@ def _send_fast2sms_otp(mobile, otp):
         print(f"{'='*50}\n")
         return True, None
     
-    api_key = getattr(settings, "FAST2SMS_API_KEY", "")
+    api_key = str(getattr(settings, "FAST2SMS_API_KEY", "")).strip()
     sender_id = getattr(settings, "FAST2SMS_SENDER_ID", "")
     route = getattr(settings, "FAST2SMS_ROUTE", "dlt")
     template_id = getattr(settings, "FAST2SMS_TEMPLATE_ID", "")
@@ -88,8 +88,9 @@ def _send_fast2sms_otp(mobile, otp):
     else:
         params["message"] = message_template.format(otp=otp)
 
-    # Add authorization as query parameter (not header)
-    params["authorization"] = api_key
+    headers = {
+        "authorization": api_key,
+    }
 
     # Debug logging
     print(f"\n🔍 Fast2SMS Request Debug:")
@@ -97,12 +98,14 @@ def _send_fast2sms_otp(mobile, otp):
     print(f"   Sender ID: {sender_id}")
     print(f"   Template ID: {template_id}")
     print(f"   Route: {route}")
-    print(f"   Params: {params}\n")
+    print(f"   Params: {params}")
+    print(f"   Headers: {{'authorization': '{api_key[:10]}...{api_key[-10:]}'}}\n")
 
     try:
         response = requests.get(
             "https://www.fast2sms.com/dev/bulkV2",
             params=params,
+            headers=headers,
             timeout=10,
         )
         raw_text = response.text or ""
