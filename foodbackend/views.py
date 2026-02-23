@@ -77,6 +77,8 @@ def _send_fast2sms_otp(mobile, otp):
         "sender_id": sender_id,
         "numbers": str(mobile),
         "flash": "0",
+        # Fast2SMS /dev/bulkV2 expects auth in query params for many accounts.
+        "authorization": api_key,
     }
 
     if str(route).lower() == "dlt":
@@ -88,9 +90,8 @@ def _send_fast2sms_otp(mobile, otp):
     else:
         params["message"] = message_template.format(otp=otp)
 
-    headers = {
-        "authorization": api_key,
-    }
+    # Keep header as fallback; query param above is primary for compatibility.
+    headers = {"authorization": api_key}
 
     # Debug logging
     print(f"\n🔍 Fast2SMS Request Debug:")
