@@ -1,0 +1,47 @@
+name: dipanddash-backend
+region: blr
+services:
+  - name: api
+    environment_slug: python
+    source_dir: food
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    http_port: 8080
+    build_command: pip install -r requirements.txt && python manage.py collectstatic --noinput
+    run_command: gunicorn food.wsgi:application --bind 0.0.0.0:$PORT
+    envs:
+      - key: DEBUG
+        value: "False"
+      - key: SECRET_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: ALLOWED_HOSTS
+        scope: RUN_AND_BUILD_TIME
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        type: SECRET
+      - key: CORS_ALLOWED_ORIGINS
+        scope: RUN_TIME
+      - key: CSRF_TRUSTED_ORIGINS
+        scope: RUN_TIME
+      - key: FAST2SMS_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: FAST2SMS_SENDER_ID
+        scope: RUN_TIME
+      - key: FAST2SMS_ROUTE
+        scope: RUN_TIME
+      - key: FAST2SMS_TEMPLATE_ID
+        scope: RUN_TIME
+      - key: RAZORPAY_KEY_ID
+        scope: RUN_TIME
+      - key: RAZORPAY_KEY_SECRET
+        scope: RUN_TIME
+        type: SECRET
+jobs:
+  - name: migrate
+    kind: PRE_DEPLOY
+    environment_slug: python
+    source_dir: food
+    run_command: python manage.py migrate --noinput
+
