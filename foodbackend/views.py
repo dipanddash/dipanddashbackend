@@ -38,8 +38,8 @@ PLATFORM_FEE = Decimal("5.00")
 RESTAURANT_LAT_DEFAULT = Decimal("12.9654")
 RESTAURANT_LNG_DEFAULT = Decimal("80.2461")
 
-RAZORPAY_KEY_ID = "rzp_test_SFZXtVKJeXVM11"
-RAZORPAY_KEY_SECRET = "QDT11YuAlT45R8OyPrHfCyKY"
+RAZORPAY_KEY_ID = getattr(settings, "RAZORPAY_KEY_ID", "")
+RAZORPAY_KEY_SECRET = getattr(settings, "RAZORPAY_KEY_SECRET", "")
 
 
 def _is_valid_mobile(mobile):
