@@ -35,11 +35,11 @@ from .models import (
 
 PLATFORM_FEE = Decimal("5.00")
 
-RESTAURANT_LAT_DEFAULT = Decimal("12.9654")
-RESTAURANT_LNG_DEFAULT = Decimal("80.2461")
+RESTAURANT_LAT_DEFAULT = Decimal("12.9697368")
+RESTAURANT_LNG_DEFAULT = Decimal("80.2479267")
 
-RAZORPAY_KEY_ID = getattr(settings, "RAZORPAY_KEY_ID", "")
-RAZORPAY_KEY_SECRET = getattr(settings, "RAZORPAY_KEY_SECRET", "")
+RAZORPAY_KEY_ID = "rzp_test_SFZXtVKJeXVM11"
+RAZORPAY_KEY_SECRET = "QDT11YuAlT45R8OyPrHfCyKY"
 
 
 def _is_valid_mobile(mobile):
@@ -59,7 +59,7 @@ def _send_fast2sms_otp(mobile, otp):
         print(f"{'='*50}\n")
         return True, None
     
-    api_key = str(getattr(settings, "FAST2SMS_API_KEY", "")).strip()
+    api_key = getattr(settings, "FAST2SMS_API_KEY", "")
     sender_id = getattr(settings, "FAST2SMS_SENDER_ID", "")
     route = getattr(settings, "FAST2SMS_ROUTE", "dlt")
     template_id = getattr(settings, "FAST2SMS_TEMPLATE_ID", "")
@@ -77,8 +77,6 @@ def _send_fast2sms_otp(mobile, otp):
         "sender_id": sender_id,
         "numbers": str(mobile),
         "flash": "0",
-        # Fast2SMS /dev/bulkV2 expects auth in query params for many accounts.
-        "authorization": api_key,
     }
 
     if str(route).lower() == "dlt":
@@ -90,8 +88,8 @@ def _send_fast2sms_otp(mobile, otp):
     else:
         params["message"] = message_template.format(otp=otp)
 
-    # Keep header as fallback; query param above is primary for compatibility.
-    headers = {"authorization": api_key}
+    # Add authorization as query parameter (not header)
+    params["authorization"] = api_key
 
     # Debug logging
     print(f"\n🔍 Fast2SMS Request Debug:")
@@ -99,14 +97,12 @@ def _send_fast2sms_otp(mobile, otp):
     print(f"   Sender ID: {sender_id}")
     print(f"   Template ID: {template_id}")
     print(f"   Route: {route}")
-    print(f"   Params: {params}")
-    print(f"   Headers: {{'authorization': '{api_key[:10]}...{api_key[-10:]}'}}\n")
+    print(f"   Params: {params}\n")
 
     try:
         response = requests.get(
             "https://www.fast2sms.com/dev/bulkV2",
             params=params,
-            headers=headers,
             timeout=10,
         )
         raw_text = response.text or ""
@@ -373,47 +369,6 @@ def get_rider_orders(request):
 
     return Response({
         "orders": [_serialize_order_for_rider(order) for order in orders]
-    })
-
-
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def get_rider_order_detail(request, order_id):
-    try:
-        rider = request.user.rider_profile
-    except Rider.DoesNotExist:
-        return Response({"error": "Rider profile not found"}, status=404)
-
-    try:
-        order = Order.objects.get(id=order_id, rider=rider)
-    except Order.DoesNotExist:
-        return Response({"error": "Order not found"}, status=404)
-
-    address = order.address
-    items = [
-        {
-            "id": item.id,
-            "name": item.item.name if item.item else "Deleted Item",
-            "quantity": item.quantity,
-            "price": float(item.price_at_order),
-        }
-        for item in order.items.all()
-    ]
-
-    return Response({
-        "id": order.id,
-        "status": order.status,
-        "created_at": order.created_at.isoformat(),
-        "total_price": float(order.total_price),
-        "customer_name": order.user.first_name or "Customer",
-        "customer_mobile": order.user.username,
-        "delivery_address": address.full_address if address else "N/A",
-        "delivery_city": address.city if address else None,
-        "delivery_postal_code": address.postal_code if address else None,
-        "delivery_otp": order.delivery_otp,
-        "rider_name": order.rider_name,
-        "rider_mobile": order.rider_mobile,
-        "items": items,
     })
 
 
@@ -936,6 +891,18 @@ def create_address(request):
         "longitude": float(address.longitude) if address.longitude else None,
         "is_default": address.is_default,
     }, status=201)
+
+
+@api_view(["DELETE"])
+@permission_classes([IsAuthenticated])
+def delete_address(request, address_id):
+    try:
+        address = Address.objects.get(id=address_id, user=request.user)
+    except Address.DoesNotExist:
+        return Response({"error": "Address not found"}, status=404)
+
+    address.delete()
+    return Response({"message": "Address deleted"})
 
 
 @api_view(["POST"])

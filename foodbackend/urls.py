@@ -29,7 +29,6 @@ from .views import (
     send_rider_otp,
     verify_rider_otp,
     get_rider_orders,
-    get_rider_order_detail,
     get_ready_for_pickup_orders,
     accept_order_for_pickup,
     home_data,
@@ -40,6 +39,7 @@ from .views import (
     remove_from_cart,
     get_addresses,
     create_address,
+    delete_address,
     checkout,
     update_order_status,
     update_rider_location,
@@ -98,7 +98,6 @@ urlpatterns = [
 
     # Rider Orders
     path("rider/orders/", get_rider_orders, name="get_rider_orders"),
-    path("rider/orders/<int:order_id>/", get_rider_order_detail, name="get_rider_order_detail"),
     path("rider/orders/ready/", get_ready_for_pickup_orders, name="get_ready_for_pickup_orders"),
     path("rider/orders/accept/", accept_order_for_pickup, name="accept_order_for_pickup"),
     
@@ -115,6 +114,7 @@ urlpatterns = [
     # Address Operations
     path("addresses/", get_addresses, name="get_addresses"),
     path("addresses/create/", create_address, name="create_address"),
+    path("addresses/<int:address_id>/delete/", delete_address, name="delete_address"),
     
     # Order Operations
     path("checkout/", checkout, name="checkout"),
