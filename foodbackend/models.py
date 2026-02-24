@@ -38,6 +38,16 @@ class Rider(models.Model):
         return f"Rider {self.mobile}"
 
 
+class StaffProfile(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="staff_profile")
+    mobile = models.CharField(max_length=15, unique=True)
+    force_password_change = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.user.email or self.user.username} ({self.mobile})"
+
+
 class Category(models.Model):
     name = models.CharField(max_length=100)
     image = models.ImageField(upload_to="categories/", blank=True, null=True)

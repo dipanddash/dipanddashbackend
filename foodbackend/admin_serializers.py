@@ -15,6 +15,7 @@ from .models import (
     UserCouponUsage,
     SupportTicket,
     SupportMessage,
+    StaffProfile,
 )
 
 
@@ -296,3 +297,38 @@ class SupportTicketSerializer(serializers.ModelSerializer):
             "updated_at",
         )
         read_only_fields = ("id", "created_at", "updated_at")
+
+
+class StaffProfileSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(read_only=True)
+    staff_id = serializers.IntegerField(source="user.id", read_only=True)
+    name = serializers.SerializerMethodField()
+    email = serializers.EmailField(source="user.email", read_only=True)
+    is_active = serializers.BooleanField(source="user.is_active", read_only=True)
+    force_password_change = serializers.BooleanField(read_only=True)
+    date_joined = serializers.DateTimeField(source="user.date_joined", read_only=True)
+    last_login = serializers.DateTimeField(source="user.last_login", read_only=True)
+
+    class Meta:
+        model = StaffProfile
+        fields = (
+            "id",
+            "staff_id",
+            "name",
+            "email",
+            "mobile",
+            "is_active",
+            "force_password_change",
+            "date_joined",
+            "last_login",
+        )
+
+    def get_name(self, obj):
+        full_name = f"{obj.user.first_name} {obj.user.last_name}".strip()
+        return full_name or obj.user.username
+
+
+class StaffCreateSerializer(serializers.Serializer):
+    name = serializers.CharField(max_length=150)
+    email = serializers.EmailField()
+    mobile = serializers.CharField(max_length=15)

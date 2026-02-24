@@ -6,6 +6,7 @@ from .admin_api import (
     admin_login,
     admin_logout,
     admin_me,
+    admin_change_password,
     admin_stats,
     AdminAddressViewSet,
     AdminAppVersionViewSet,
@@ -21,6 +22,7 @@ from .admin_api import (
     AdminUserViewSet,
     AdminSupportTicketViewSet,
     AdminSupportMessageViewSet,
+    AdminStaffViewSet,
 )
 from .views import (
     send_otp,
@@ -77,6 +79,7 @@ admin_router.register(r"users", AdminUserViewSet, basename="admin-users")
 admin_router.register(r"addresses", AdminAddressViewSet, basename="admin-addresses")
 admin_router.register(r"support-tickets", AdminSupportTicketViewSet, basename="admin-support-tickets")
 admin_router.register(r"support-messages", AdminSupportMessageViewSet, basename="admin-support-messages")
+admin_router.register(r"staff", AdminStaffViewSet, basename="admin-staff")
 
 urlpatterns = [
     # Admin API (session-based)
@@ -84,6 +87,7 @@ urlpatterns = [
     path("admin/login/", admin_login, name="admin_login"),
     path("admin/logout/", admin_logout, name="admin_logout"),
     path("admin/me/", admin_me, name="admin_me"),
+    path("admin/change-password/", admin_change_password, name="admin_change_password"),
     path("admin/stats/", admin_stats, name="admin_stats"),
     path("admin/", include(admin_router.urls)),
 

@@ -6,6 +6,7 @@ from .admin_api import (
     admin_login,
     admin_logout,
     admin_me,
+    admin_change_password,
     admin_stats,
     AdminAddressViewSet,
     AdminAppVersionViewSet,
@@ -19,6 +20,7 @@ from .admin_api import (
     AdminPushTokenViewSet,
     AdminSupportMessageViewSet,
     AdminSupportTicketViewSet,
+    AdminStaffViewSet,
     AdminUserCouponUsageViewSet,
     AdminUserViewSet,
 )
@@ -38,12 +40,14 @@ admin_router.register(r"users", AdminUserViewSet, basename="admin-users")
 admin_router.register(r"addresses", AdminAddressViewSet, basename="admin-addresses")
 admin_router.register(r"support-tickets", AdminSupportTicketViewSet, basename="admin-support-tickets")
 admin_router.register(r"support-messages", AdminSupportMessageViewSet, basename="admin-support-messages")
+admin_router.register(r"staff", AdminStaffViewSet, basename="admin-staff")
 
 urlpatterns = [
     path("csrf/", admin_csrf, name="admin_csrf"),
     path("login/", admin_login, name="admin_login"),
     path("logout/", admin_logout, name="admin_logout"),
     path("me/", admin_me, name="admin_me"),
+    path("change-password/", admin_change_password, name="admin_change_password"),
     path("stats/", admin_stats, name="admin_stats"),
     path("", include(admin_router.urls)),
 ]

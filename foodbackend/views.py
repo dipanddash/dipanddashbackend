@@ -3,10 +3,12 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.contrib.auth.models import User
 from django.conf import settings
+from django.core.cache import cache
 from rest_framework_simplejwt.tokens import RefreshToken
 from decimal import Decimal
 from django.utils import timezone
 from django.db import models
+from django.db.models import Count, Prefetch
 import random
 import requests
 import math
@@ -20,6 +22,7 @@ from .models import (
     Rider,
     Category,
     Item,
+    ComboItem,
     Cart,
     CartItem,
     Address,
@@ -31,6 +34,8 @@ from .models import (
     UserCouponUsage,
     PushToken,
     AppVersion,
+    SupportTicket,
+    SupportMessage,
 )
 
 PLATFORM_FEE = Decimal("5.00")
@@ -198,12 +203,15 @@ def _serialize_order_for_rider(order):
     customer_name = order.user.first_name or "Customer"
     customer_mobile = order.user.username
     address = order.address
+    items_count = getattr(order, "items_count", None)
+    if items_count is None:
+        items_count = order.items.count()
 
     return {
         "id": order.id,
         "status": order.status,
         "created_at": order.created_at.isoformat(),
-        "items_count": order.items.count(),
+        "items_count": items_count,
         "total_price": float(order.total_price),
         "delivery_otp": order.delivery_otp,
         "customer_name": customer_name,
@@ -365,7 +373,12 @@ def get_rider_orders(request):
     except Rider.DoesNotExist:
         return Response({"error": "Rider profile not found"}, status=404)
 
-    orders = Order.objects.filter(rider=rider).order_by('-created_at')
+    orders = (
+        Order.objects.filter(rider=rider)
+        .select_related("user", "address")
+        .annotate(items_count=Count("items"))
+        .order_by("-created_at")
+    )
 
     return Response({
         "orders": [_serialize_order_for_rider(order) for order in orders]
@@ -375,7 +388,12 @@ def get_rider_orders(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_ready_for_pickup_orders(request):
-    orders = Order.objects.filter(status='ready_for_pickup', rider__isnull=True).order_by('created_at')
+    orders = (
+        Order.objects.filter(status="ready_for_pickup", rider__isnull=True)
+        .select_related("user", "address")
+        .annotate(items_count=Count("items"))
+        .order_by("created_at")
+    )
 
     return Response({
         "orders": [_serialize_order_for_rider(order) for order in orders]
@@ -600,10 +618,43 @@ def update_rider_location_simple(request):
 
 @api_view(["GET"])
 def home_data(request):
-    categories = Category.objects.all()
-    items = Item.objects.filter(is_available=True).prefetch_related("combo_links__item", "category")
+    cache_key = "api:home_data:v1"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return Response(cached)
 
-    return Response({
+    combo_links_prefetch = Prefetch(
+        "combo_links",
+        queryset=ComboItem.objects.select_related("item").only(
+            "combo_id",
+            "quantity",
+            "item__id",
+            "item__name",
+            "item__price",
+        ),
+        to_attr="prefetched_combo_links",
+    )
+
+    categories = Category.objects.only("id", "name", "image", "gst_rate")
+    items = (
+        Item.objects.filter(is_available=True)
+        .select_related("category")
+        .prefetch_related(combo_links_prefetch)
+        .only(
+            "id",
+            "name",
+            "price",
+            "description",
+            "is_combo",
+            "gst_rate",
+            "image",
+            "category__id",
+            "category__name",
+            "category__gst_rate",
+        )
+    )
+
+    payload = {
         "categories": [
             {
                 "id": c.id,
@@ -617,12 +668,16 @@ def home_data(request):
             {
                 "id": i.id,
                 "name": i.name,
-                "price": float(i.get_effective_price()),
+                "price": float(
+                    sum(ci.item.price * ci.quantity for ci in getattr(i, "prefetched_combo_links", []))
+                    if i.is_combo
+                    else i.price
+                ),
                 "description": i.description,
                 "is_combo": i.is_combo,
                 "category_id": i.category.id,
                 "category_name": i.category.name,
-                "gst_rate": float(i.get_gst_rate()),
+                "gst_rate": float(i.gst_rate if i.gst_rate is not None else i.category.gst_rate),
                 "image": request.build_absolute_uri(i.image.url) if i.image else None,
                 "combo_items": [
                     {
@@ -631,28 +686,60 @@ def home_data(request):
                         "quantity": ci.quantity,
                         "price": float(ci.item.price),
                     }
-                    for ci in i.combo_links.select_related("item")
+                    for ci in getattr(i, "prefetched_combo_links", [])
                 ] if i.is_combo else [],
             }
             for i in items
         ],
-    })
+    }
+    cache.set(cache_key, payload, timeout=60)
+    return Response(payload)
 
 
 @api_view(["GET"])
 def get_combos(request):
-    combos = Item.objects.filter(is_available=True, is_combo=True).prefetch_related("combo_links__item", "category")
+    cache_key = "api:combos:v1"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return Response(cached)
 
-    return Response({
+    combo_links_prefetch = Prefetch(
+        "combo_links",
+        queryset=ComboItem.objects.select_related("item").only(
+            "combo_id",
+            "quantity",
+            "item__id",
+            "item__name",
+            "item__price",
+        ),
+        to_attr="prefetched_combo_links",
+    )
+    combos = (
+        Item.objects.filter(is_available=True, is_combo=True)
+        .select_related("category")
+        .prefetch_related(combo_links_prefetch)
+        .only(
+            "id",
+            "name",
+            "description",
+            "gst_rate",
+            "image",
+            "category__id",
+            "category__name",
+            "category__gst_rate",
+        )
+    )
+
+    payload = {
         "combos": [
             {
                 "id": combo.id,
                 "name": combo.name,
                 "description": combo.description,
-                "price": float(combo.get_effective_price()),
+                "price": float(sum(ci.item.price * ci.quantity for ci in getattr(combo, "prefetched_combo_links", []))),
                 "category_id": combo.category.id,
                 "category_name": combo.category.name,
-                "gst_rate": float(combo.get_gst_rate()),
+                "gst_rate": float(combo.gst_rate if combo.gst_rate is not None else combo.category.gst_rate),
                 "image": request.build_absolute_uri(combo.image.url) if combo.image else None,
                 "combo_items": [
                     {
@@ -661,12 +748,14 @@ def get_combos(request):
                         "quantity": ci.quantity,
                         "price": float(ci.item.price),
                     }
-                    for ci in combo.combo_links.select_related("item")
+                    for ci in getattr(combo, "prefetched_combo_links", [])
                 ],
             }
             for combo in combos
         ]
-    })
+    }
+    cache.set(cache_key, payload, timeout=60)
+    return Response(payload)
 
 
 @api_view(["GET"])
@@ -677,28 +766,54 @@ def get_cart(request):
     except Cart.DoesNotExist:
         cart = Cart.objects.create(user=request.user)
 
-    cart_items = cart.items.all()
+    combo_links_prefetch = Prefetch(
+        "item__combo_links",
+        queryset=ComboItem.objects.select_related("item").only(
+            "combo_id",
+            "quantity",
+            "item__id",
+            "item__name",
+            "item__price",
+        ),
+        to_attr="prefetched_combo_links",
+    )
+    cart_items = list(
+        cart.items.select_related("item__category").prefetch_related(combo_links_prefetch)
+    )
 
-    subtotal = cart.get_subtotal()
-    total_tax = cart.get_total_tax()
-    total_with_tax_and_fee = subtotal + total_tax + PLATFORM_FEE
+    items_payload = []
+    subtotal = Decimal("0.00")
+    total_tax = Decimal("0.00")
+    for ci in cart_items:
+        item = ci.item
+        combo_links = getattr(item, "prefetched_combo_links", [])
+        effective_price = (
+            sum(ci_link.item.price * ci_link.quantity for ci_link in combo_links)
+            if item.is_combo
+            else item.price
+        )
+        item_subtotal = effective_price * ci.quantity
+        gst_rate = item.gst_rate if item.gst_rate is not None else item.category.gst_rate
+        item_tax = item_subtotal * (gst_rate / Decimal("100"))
+        item_total = item_subtotal + item_tax
 
-    return Response({
-        "items": [
+        subtotal += item_subtotal
+        total_tax += item_tax
+        items_payload.append(
             {
                 "id": ci.id,
-                "item_id": ci.item.id,
-                "name": ci.item.name,
-                "price": float(ci.item.get_effective_price()),
-                "description": ci.item.description,
-                "is_combo": ci.item.is_combo,
+                "item_id": item.id,
+                "name": item.name,
+                "price": float(effective_price),
+                "description": item.description,
+                "is_combo": item.is_combo,
                 "quantity": ci.quantity,
-                "category_name": ci.item.category.name,
-                "gst_rate": float(ci.item.get_gst_rate()),
-                "subtotal": float(ci.get_subtotal()),
-                "tax": float(ci.get_tax()),
-                "total": float(ci.get_total_price()),
-                "image": request.build_absolute_uri(ci.item.image.url) if ci.item.image else None,
+                "category_name": item.category.name,
+                "gst_rate": float(gst_rate),
+                "subtotal": float(item_subtotal),
+                "tax": float(item_tax),
+                "total": float(item_total),
+                "image": request.build_absolute_uri(item.image.url) if item.image else None,
                 "combo_items": [
                     {
                         "item_id": ci_link.item.id,
@@ -706,11 +821,15 @@ def get_cart(request):
                         "quantity": ci_link.quantity,
                         "price": float(ci_link.item.price),
                     }
-                    for ci_link in ci.item.combo_links.select_related("item")
-                ] if ci.item.is_combo else [],
+                    for ci_link in combo_links
+                ] if item.is_combo else [],
             }
-            for ci in cart_items
-        ],
+        )
+
+    total_with_tax_and_fee = subtotal + total_tax + PLATFORM_FEE
+
+    return Response({
+        "items": items_payload,
         "summary": {
             "subtotal": float(subtotal),
             "total_tax": float(total_tax),
@@ -1101,7 +1220,11 @@ def checkout(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_orders(request):
-    orders = request.user.orders.all().order_by('-created_at')
+    orders = (
+        request.user.orders.select_related("address")
+        .annotate(items_count=Count("items"))
+        .order_by("-created_at")
+    )
 
     return Response({
         "orders": [
@@ -1122,7 +1245,7 @@ def get_orders(request):
                 if order.rider_location_updated_at
                 else None,
                 "created_at": order.created_at.isoformat(),
-                "items_count": order.items.count(),
+                "items_count": order.items_count,
                 "delivery_address": order.address.full_address if order.address else "N/A",
             }
             for order in orders
@@ -1133,9 +1256,13 @@ def get_orders(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_order_detail(request, order_id):
-    try:
-        order = Order.objects.get(id=order_id, user=request.user)
-    except Order.DoesNotExist:
+    order = (
+        Order.objects.filter(id=order_id, user=request.user)
+        .select_related("address")
+        .prefetch_related("items__item", "review__user", "review__item_reviews")
+        .first()
+    )
+    if not order:
         return Response({"error": "Order not found"}, status=404)
 
     restaurant_lat, restaurant_lng = _get_restaurant_coords()
@@ -1324,6 +1451,8 @@ def get_active_order(request):
     order = (
         Order.objects
         .filter(user=request.user, status__in=active_statuses)
+        .select_related("address")
+        .annotate(items_count=Count("items"))
         .order_by('-created_at')
         .first()
     )
@@ -1341,7 +1470,7 @@ def get_active_order(request):
             "rider_mobile": order.rider_mobile,
             "delivery_otp": order.delivery_otp,
             "delivery_address": order.address.full_address if order.address else None,
-            "items_count": order.items.count(),
+            "items_count": order.items_count,
             "rider_latitude": float(order.rider_latitude) if order.rider_latitude else None,
             "rider_longitude": float(order.rider_longitude) if order.rider_longitude else None,
         }
@@ -1941,8 +2070,6 @@ def apply_coupon(request):
 @permission_classes([IsAuthenticated])
 def create_support_ticket(request):
     """Create a new support ticket"""
-    from .models import SupportTicket
-    
     category = request.data.get('category')
     order_id = request.data.get('order_id')
     initial_message = request.data.get('message')
@@ -1966,7 +2093,6 @@ def create_support_ticket(request):
     
     # Create initial message if provided
     if initial_message:
-        from .models import SupportMessage
         SupportMessage.objects.create(
             ticket=ticket,
             sender_type='customer',
@@ -1985,13 +2111,27 @@ def create_support_ticket(request):
 @permission_classes([IsAuthenticated])
 def get_support_tickets(request):
     """Get all support tickets for current user"""
-    from .models import SupportTicket
-    
-    tickets = SupportTicket.objects.filter(user=request.user)
+    tickets = (
+        SupportTicket.objects.filter(user=request.user)
+        .annotate(
+            unread_count=Count(
+                "messages",
+                filter=models.Q(messages__sender_type="admin"),
+            )
+        )
+        .prefetch_related(
+            Prefetch(
+                "messages",
+                queryset=SupportMessage.objects.only("id", "ticket_id", "message").order_by("-created_at"),
+                to_attr="prefetched_messages",
+            )
+        )
+    )
     
     data = []
     for ticket in tickets:
-        last_message = ticket.messages.last()
+        prefetched_messages = getattr(ticket, "prefetched_messages", [])
+        last_message = prefetched_messages[0] if prefetched_messages else None
         data.append({
             'id': ticket.id,
             'category': ticket.category,
@@ -2002,7 +2142,7 @@ def get_support_tickets(request):
             'created_at': ticket.created_at.isoformat(),
             'updated_at': ticket.updated_at.isoformat(),
             'last_message': last_message.message if last_message else None,
-            'unread_count': ticket.messages.filter(sender_type='admin').count()
+            'unread_count': ticket.unread_count,
         })
     
     return Response(data)
@@ -2012,8 +2152,6 @@ def get_support_tickets(request):
 @permission_classes([IsAuthenticated])
 def support_chat(request, ticket_id):
     """Get messages or send a new message for a ticket"""
-    from .models import SupportTicket, SupportMessage
-    
     try:
         ticket = SupportTicket.objects.get(id=ticket_id, user=request.user)
     except SupportTicket.DoesNotExist:
