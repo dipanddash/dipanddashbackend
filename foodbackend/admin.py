@@ -1,6 +1,8 @@
 from django.contrib import admin
 from django import forms
+from django.core.cache import cache
 from .models import (
+    HomeBanner,
     Category, 
     Item, 
     Cart, 
@@ -15,6 +17,23 @@ from .models import (
     SupportTicket,
     SupportMessage,
 )
+
+
+@admin.register(HomeBanner)
+class HomeBannerAdmin(admin.ModelAdmin):
+    list_display = ("id", "title", "sort_order", "is_active", "created_at")
+    list_filter = ("is_active",)
+    list_editable = ("sort_order", "is_active")
+    search_fields = ("title",)
+    readonly_fields = ("created_at", "updated_at")
+
+    def save_model(self, request, obj, form, change):
+        super().save_model(request, obj, form, change)
+        cache.delete("api:home_data:v2")
+
+    def delete_model(self, request, obj):
+        super().delete_model(request, obj)
+        cache.delete("api:home_data:v2")
 
 
 @admin.register(Category)

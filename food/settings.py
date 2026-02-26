@@ -53,12 +53,21 @@ SIMPLE_JWT = {
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
+    "django.middleware.gzip.GZipMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
 ]
+
+CACHES = {
+    "default": {
+        "BACKEND": config("CACHE_BACKEND", default="django.core.cache.backends.locmem.LocMemCache"),
+        "LOCATION": config("CACHE_LOCATION", default="dipanddash-local-cache"),
+        "TIMEOUT": config("CACHE_TIMEOUT", default=600, cast=int),
+    }
+}
 
 # CSRF Configuration for React Frontend
 CSRF_TRUSTED_ORIGINS = config(

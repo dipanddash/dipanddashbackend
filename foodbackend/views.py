@@ -7,8 +7,8 @@ from django.core.cache import cache
 from rest_framework_simplejwt.tokens import RefreshToken
 from decimal import Decimal
 from django.utils import timezone
-from django.db import models
-from django.db.models import Count, Prefetch
+from django.db import models, transaction
+from django.db.models import Count, Prefetch, OuterRef, Subquery, F
 import random
 import requests
 import math
@@ -20,6 +20,7 @@ from .models import (
     OTP,
     RiderOTP,
     Rider,
+    HomeBanner,
     Category,
     Item,
     ComboItem,
@@ -222,6 +223,54 @@ def _serialize_order_for_rider(order):
         "delivery_latitude": float(address.latitude) if address and address.latitude else None,
         "delivery_longitude": float(address.longitude) if address and address.longitude else None,
     }
+
+
+def _load_cart_items_with_pricing_data(cart):
+    combo_links_prefetch = Prefetch(
+        "item__combo_links",
+        queryset=ComboItem.objects.select_related("item").only(
+            "combo_id",
+            "quantity",
+            "item__id",
+            "item__name",
+            "item__price",
+        ),
+        to_attr="prefetched_combo_links",
+    )
+    return list(
+        cart.items.select_related("item__category").prefetch_related(combo_links_prefetch)
+    )
+
+
+def _calculate_cart_totals(cart_items):
+    subtotal = Decimal("0.00")
+    total_tax = Decimal("0.00")
+    order_item_rows = []
+
+    for cart_item in cart_items:
+        item = cart_item.item
+        combo_links = getattr(item, "prefetched_combo_links", [])
+        effective_price = (
+            sum(ci_link.item.price * ci_link.quantity for ci_link in combo_links)
+            if item.is_combo
+            else item.price
+        )
+        item_subtotal = effective_price * cart_item.quantity
+        gst_rate = item.gst_rate if item.gst_rate is not None else item.category.gst_rate
+        item_tax = item_subtotal * (gst_rate / Decimal("100"))
+
+        subtotal += item_subtotal
+        total_tax += item_tax
+        order_item_rows.append(
+            {
+                "item": item,
+                "quantity": cart_item.quantity,
+                "price_at_order": effective_price,
+                "tax_at_order": item_tax,
+            }
+        )
+
+    return subtotal, total_tax, order_item_rows
 
 
 @api_view(["POST"])
@@ -618,10 +667,11 @@ def update_rider_location_simple(request):
 
 @api_view(["GET"])
 def home_data(request):
-    cache_key = "api:home_data:v1"
+    cache_key = "api:home_data:v2"
     cached = cache.get(cache_key)
     if cached is not None:
         return Response(cached)
+    media_base = request.build_absolute_uri(settings.MEDIA_URL)
 
     combo_links_prefetch = Prefetch(
         "combo_links",
@@ -636,6 +686,7 @@ def home_data(request):
     )
 
     categories = Category.objects.only("id", "name", "image", "gst_rate")
+    banners = HomeBanner.objects.filter(is_active=True).only("id", "title", "media", "sort_order")
     items = (
         Item.objects.filter(is_available=True)
         .select_related("category")
@@ -655,11 +706,20 @@ def home_data(request):
     )
 
     payload = {
+        "banners": [
+            {
+                "id": b.id,
+                "title": b.title,
+                "media": f"{media_base}{b.media.name}" if b.media else None,
+                "sort_order": b.sort_order,
+            }
+            for b in banners
+        ],
         "categories": [
             {
                 "id": c.id,
                 "name": c.name,
-                "image": request.build_absolute_uri(c.image.url) if c.image else None,
+                "image": f"{media_base}{c.image.name}" if c.image else None,
                 "gst_rate": float(c.gst_rate),
             }
             for c in categories
@@ -678,7 +738,7 @@ def home_data(request):
                 "category_id": i.category.id,
                 "category_name": i.category.name,
                 "gst_rate": float(i.gst_rate if i.gst_rate is not None else i.category.gst_rate),
-                "image": request.build_absolute_uri(i.image.url) if i.image else None,
+                "image": f"{media_base}{i.image.name}" if i.image else None,
                 "combo_items": [
                     {
                         "item_id": ci.item.id,
@@ -692,7 +752,7 @@ def home_data(request):
             for i in items
         ],
     }
-    cache.set(cache_key, payload, timeout=60)
+    cache.set(cache_key, payload, timeout=600)
     return Response(payload)
 
 
@@ -702,6 +762,7 @@ def get_combos(request):
     cached = cache.get(cache_key)
     if cached is not None:
         return Response(cached)
+    media_base = request.build_absolute_uri(settings.MEDIA_URL)
 
     combo_links_prefetch = Prefetch(
         "combo_links",
@@ -740,7 +801,7 @@ def get_combos(request):
                 "category_id": combo.category.id,
                 "category_name": combo.category.name,
                 "gst_rate": float(combo.gst_rate if combo.gst_rate is not None else combo.category.gst_rate),
-                "image": request.build_absolute_uri(combo.image.url) if combo.image else None,
+                "image": f"{media_base}{combo.image.name}" if combo.image else None,
                 "combo_items": [
                     {
                         "item_id": ci.item.id,
@@ -754,7 +815,7 @@ def get_combos(request):
             for combo in combos
         ]
     }
-    cache.set(cache_key, payload, timeout=60)
+    cache.set(cache_key, payload, timeout=600)
     return Response(payload)
 
 
@@ -766,20 +827,7 @@ def get_cart(request):
     except Cart.DoesNotExist:
         cart = Cart.objects.create(user=request.user)
 
-    combo_links_prefetch = Prefetch(
-        "item__combo_links",
-        queryset=ComboItem.objects.select_related("item").only(
-            "combo_id",
-            "quantity",
-            "item__id",
-            "item__name",
-            "item__price",
-        ),
-        to_attr="prefetched_combo_links",
-    )
-    cart_items = list(
-        cart.items.select_related("item__category").prefetch_related(combo_links_prefetch)
-    )
+    cart_items = _load_cart_items_with_pricing_data(cart)
 
     items_payload = []
     subtotal = Decimal("0.00")
@@ -1083,8 +1131,8 @@ def checkout(request):
                 status=400
             )
 
-    subtotal = cart.get_subtotal()
-    total_tax = cart.get_total_tax()
+    cart_items_list = _load_cart_items_with_pricing_data(cart)
+    subtotal, total_tax, order_item_rows = _calculate_cart_totals(cart_items_list)
     
     # Handle coupon discount
     coupon = None
@@ -1131,10 +1179,6 @@ def checkout(request):
                     except Item.DoesNotExist:
                         return Response({"error": "Invalid free item selection"}, status=400)
             
-            # Increment coupon usage
-            coupon.used_count += 1
-            coupon.save(update_fields=['used_count'])
-            
         except Coupon.DoesNotExist:
             return Response({"error": "Invalid coupon"}, status=404)
     
@@ -1144,64 +1188,67 @@ def checkout(request):
     if total_price < 0:
         total_price = Decimal("0.00")
 
-    # Capture all cart items before creating order
-    cart_items_list = list(cart.items.all().select_related('item__category'))
-
-    order = Order.objects.create(
-        user=request.user,
-        address=address,
-        subtotal=subtotal,
-        tax=total_tax,
-        platform_fee=PLATFORM_FEE,
-        delivery_charge=delivery_charge,
-        coupon=coupon,
-        coupon_discount=coupon_discount,
-        total_price=total_price,
-        status='pickup_pending' if delivery_method == "pickup" else 'confirmed',
-        delivery_otp=_generate_delivery_otp() if delivery_method == "delivery" else None,
-    )
-
-    # Add all cart items to the order
-    for cart_item in cart_items_list:
-        OrderItem.objects.create(
-            order=order,
-            item=cart_item.item,
-            quantity=cart_item.quantity,
-            price_at_order=cart_item.item.get_effective_price(),
-            tax_at_order=cart_item.get_tax(),
-        )
-    
-    # Add free item from coupon to order (so admin can see and pack it)
-    if coupon and coupon.discount_type == 'free_item':
-        free_item = None
-        if coupon.free_item:
-            free_item = coupon.free_item
-        elif coupon.free_item_category and selected_item_id:
-            try:
-                free_item = Item.objects.get(id=selected_item_id)
-            except Item.DoesNotExist:
-                pass
-        
-        if free_item:
-            # Add the free item to the order with price 0
-            OrderItem.objects.create(
-                order=order,
-                item=free_item,
-                quantity=1,
-                price_at_order=Decimal('0.00'),  # Free item, no charge
-                tax_at_order=Decimal('0.00'),  # No tax on free item
-            )
-    
-    # Record coupon usage
-    if coupon:
-        UserCouponUsage.objects.create(
+    with transaction.atomic():
+        order = Order.objects.create(
             user=request.user,
+            address=address,
+            subtotal=subtotal,
+            tax=total_tax,
+            platform_fee=PLATFORM_FEE,
+            delivery_charge=delivery_charge,
             coupon=coupon,
-            order=order,
-            discount_amount=coupon_discount
+            coupon_discount=coupon_discount,
+            total_price=total_price,
+            status='pickup_pending' if delivery_method == "pickup" else 'confirmed',
+            delivery_otp=_generate_delivery_otp() if delivery_method == "delivery" else None,
         )
 
-    cart.items.all().delete()
+        order_items_to_create = [
+            OrderItem(
+                order=order,
+                item=row["item"],
+                quantity=row["quantity"],
+                price_at_order=row["price_at_order"],
+                tax_at_order=row["tax_at_order"],
+            )
+            for row in order_item_rows
+        ]
+
+        # Add free item from coupon to order (so admin can see and pack it)
+        if coupon and coupon.discount_type == 'free_item':
+            free_item = None
+            if coupon.free_item:
+                free_item = coupon.free_item
+            elif coupon.free_item_category and selected_item_id:
+                try:
+                    free_item = Item.objects.get(id=selected_item_id)
+                except Item.DoesNotExist:
+                    free_item = None
+
+            if free_item:
+                order_items_to_create.append(
+                    OrderItem(
+                        order=order,
+                        item=free_item,
+                        quantity=1,
+                        price_at_order=Decimal("0.00"),
+                        tax_at_order=Decimal("0.00"),
+                    )
+                )
+
+        OrderItem.objects.bulk_create(order_items_to_create)
+
+        # Record coupon usage
+        if coupon:
+            Coupon.objects.filter(id=coupon.id).update(used_count=F("used_count") + 1)
+            UserCouponUsage.objects.create(
+                user=request.user,
+                coupon=coupon,
+                order=order,
+                discount_amount=coupon_discount
+            )
+
+        cart.items.all().delete()
 
     return Response({
         "order_id": order.id,
@@ -1577,35 +1624,39 @@ def verify_razorpay_payment(request):
                     )
                 delivery_charge = _calculate_delivery_charge(distance) if distance else Decimal("0.00")
 
-        subtotal = cart.get_subtotal()
-        total_tax = cart.get_total_tax()
+        cart_items_list = _load_cart_items_with_pricing_data(cart)
+        subtotal, total_tax, order_item_rows = _calculate_cart_totals(cart_items_list)
         total_price = subtotal + total_tax + PLATFORM_FEE + delivery_charge
 
-        # Create order
-        order = Order.objects.create(
-            user=request.user,
-            address=address,
-            subtotal=subtotal,
-            tax=total_tax,
-            platform_fee=PLATFORM_FEE,
-            delivery_charge=delivery_charge,
-            total_price=total_price,
-            status='pickup_pending' if delivery_method == "pickup" else 'confirmed',
-            delivery_otp=_generate_delivery_otp() if delivery_method == "delivery" else None,
-        )
-
-        # Create order items
-        for cart_item in cart.items.all():
-            OrderItem.objects.create(
-                order=order,
-                item=cart_item.item,
-                quantity=cart_item.quantity,
-                price_at_order=cart_item.item.get_effective_price(),
-                tax_at_order=cart_item.get_tax(),
+        with transaction.atomic():
+            # Create order
+            order = Order.objects.create(
+                user=request.user,
+                address=address,
+                subtotal=subtotal,
+                tax=total_tax,
+                platform_fee=PLATFORM_FEE,
+                delivery_charge=delivery_charge,
+                total_price=total_price,
+                status='pickup_pending' if delivery_method == "pickup" else 'confirmed',
+                delivery_otp=_generate_delivery_otp() if delivery_method == "delivery" else None,
             )
 
-        # Clear cart
-        cart.items.all().delete()
+            OrderItem.objects.bulk_create(
+                [
+                    OrderItem(
+                        order=order,
+                        item=row["item"],
+                        quantity=row["quantity"],
+                        price_at_order=row["price_at_order"],
+                        tax_at_order=row["tax_at_order"],
+                    )
+                    for row in order_item_rows
+                ]
+            )
+
+            # Clear cart
+            cart.items.all().delete()
 
         return Response({
             "success": True,
@@ -1843,20 +1894,21 @@ def available_coupons(request):
         now = timezone.now()
         
         # Get active coupons that are currently valid
-        coupons = Coupon.objects.filter(
+        coupons = Coupon.objects.select_related("free_item", "free_item_category").filter(
             is_active=True,
             valid_from__lte=now
         ).filter(
             models.Q(valid_until__isnull=True) | models.Q(valid_until__gte=now)
         )
-        
+        user_has_orders = Order.objects.filter(user=user).exists()
+
         coupon_list = []
         for coupon in coupons:
             # Check if coupon is still valid and user is eligible
             is_valid, message = coupon.is_valid()
-            can_use, eligibility_msg = coupon.can_be_used_by_user(user)
-            
-            if is_valid and can_use:
+            is_eligible = not (coupon.for_first_time_users_only and user_has_orders)
+
+            if is_valid and is_eligible:
                 coupon_data = {
                     'id': coupon.id,
                     'code': coupon.code,
@@ -1904,7 +1956,7 @@ def validate_coupon(request):
             return Response({'error': 'Coupon code is required'}, status=400)
         
         try:
-            coupon = Coupon.objects.get(code=code)
+            coupon = Coupon.objects.select_related("free_item", "free_item_category").get(code=code)
         except Coupon.DoesNotExist:
             return Response({'error': 'Invalid coupon code'}, status=404)
         
@@ -1995,7 +2047,7 @@ def apply_coupon(request):
             return Response({'error': 'Coupon ID is required'}, status=400)
         
         try:
-            coupon = Coupon.objects.get(id=coupon_id)
+            coupon = Coupon.objects.select_related("free_item", "free_item_category").get(id=coupon_id)
         except Coupon.DoesNotExist:
             return Response({'error': 'Invalid coupon'}, status=404)
         
@@ -2111,28 +2163,26 @@ def create_support_ticket(request):
 @permission_classes([IsAuthenticated])
 def get_support_tickets(request):
     """Get all support tickets for current user"""
+    last_message_subquery = Subquery(
+        SupportMessage.objects.filter(ticket_id=OuterRef("pk"))
+        .order_by("-created_at")
+        .values("message")[:1]
+    )
     tickets = (
         SupportTicket.objects.filter(user=request.user)
+        .only("id", "category", "status", "order_id", "created_at", "updated_at")
         .annotate(
             unread_count=Count(
                 "messages",
                 filter=models.Q(messages__sender_type="admin"),
-            )
+            ),
+            last_message=last_message_subquery,
         )
-        .prefetch_related(
-            Prefetch(
-                "messages",
-                queryset=SupportMessage.objects.only("id", "ticket_id", "message").order_by("-created_at"),
-                to_attr="prefetched_messages",
-            )
-        )
+        .order_by("-created_at")
     )
-    
-    data = []
-    for ticket in tickets:
-        prefetched_messages = getattr(ticket, "prefetched_messages", [])
-        last_message = prefetched_messages[0] if prefetched_messages else None
-        data.append({
+
+    data = [
+        {
             'id': ticket.id,
             'category': ticket.category,
             'category_display': ticket.get_category_display(),
@@ -2141,10 +2191,12 @@ def get_support_tickets(request):
             'order_id': ticket.order_id,
             'created_at': ticket.created_at.isoformat(),
             'updated_at': ticket.updated_at.isoformat(),
-            'last_message': last_message.message if last_message else None,
+            'last_message': ticket.last_message,
             'unread_count': ticket.unread_count,
-        })
-    
+        }
+        for ticket in tickets
+    ]
+
     return Response(data)
 
 
@@ -2153,13 +2205,15 @@ def get_support_tickets(request):
 def support_chat(request, ticket_id):
     """Get messages or send a new message for a ticket"""
     try:
-        ticket = SupportTicket.objects.get(id=ticket_id, user=request.user)
+        ticket = SupportTicket.objects.only(
+            "id", "user_id", "category", "status", "order_id", "created_at"
+        ).get(id=ticket_id, user=request.user)
     except SupportTicket.DoesNotExist:
         return Response({'error': 'Ticket not found'}, status=404)
-    
+
     if request.method == 'GET':
         # Return all messages
-        messages = ticket.messages.all()
+        messages = ticket.messages.only("id", "sender_type", "message", "created_at").all()
         data = {
             'ticket': {
                 'id': ticket.id,

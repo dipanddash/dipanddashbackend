@@ -9,6 +9,11 @@ class OTP(models.Model):
     otp = models.CharField(max_length=4)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        indexes = [
+            models.Index(fields=["mobile", "created_at"], name="otp_mobile_created_idx"),
+        ]
+
     def is_expired(self):
         return timezone.now() > self.created_at + timedelta(minutes=5)
 
@@ -20,6 +25,11 @@ class RiderOTP(models.Model):
     mobile = models.CharField(max_length=10)
     otp = models.CharField(max_length=4)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["mobile", "created_at"], name="riderotp_mobile_created_idx"),
+        ]
 
     def is_expired(self):
         return timezone.now() > self.created_at + timedelta(minutes=5)
@@ -60,6 +70,21 @@ class Category(models.Model):
         return self.name
 
 
+class HomeBanner(models.Model):
+    title = models.CharField(max_length=120, blank=True)
+    media = models.ImageField(upload_to="home_banners/")
+    is_active = models.BooleanField(default=True)
+    sort_order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["sort_order", "id"]
+
+    def __str__(self):
+        return self.title or f"Banner #{self.id}"
+
+
 class Item(models.Model):
     category = models.ForeignKey(Category, on_delete=models.CASCADE, related_name="items")
     name = models.CharField(max_length=150)
@@ -82,6 +107,11 @@ class Item(models.Model):
         related_name="included_in_combos",
         blank=True,
     )
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["is_available", "is_combo"]),
+        ]
 
     def __str__(self):
         return f"{self.name} - ₹{self.get_effective_price()}"
@@ -219,6 +249,15 @@ class Order(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "created_at"], name="order_user_created_idx"),
+            models.Index(fields=["user", "status", "created_at"], name="order_user_status_created_idx"),
+            models.Index(fields=["rider", "created_at"], name="order_rider_created_idx"),
+            models.Index(fields=["status", "rider", "created_at"], name="order_status_rider_created_idx"),
+            models.Index(fields=["rider_mobile"], name="order_rider_mobile_idx"),
+        ]
+
     def __str__(self):
         return f"Order #{self.id} - {self.user.username}"
 
@@ -354,6 +393,10 @@ class Coupon(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=["is_active", "valid_from", "valid_until"], name="coupon_active_window_idx"),
+            models.Index(fields=["for_first_time_users_only"], name="coupon_first_time_idx"),
+        ]
 
     def __str__(self):
         return f"{self.code} - {self.get_discount_type_display()}"
@@ -431,6 +474,10 @@ class SupportTicket(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=["user", "created_at"], name="supportticket_user_created_idx"),
+            models.Index(fields=["status", "created_at"], name="supticket_status_created_ix"),
+        ]
 
     def __str__(self):
         return f"Ticket #{self.id} - {self.get_category_display()} - {self.user.username}"
@@ -464,6 +511,9 @@ class SupportMessage(models.Model):
 
     class Meta:
         ordering = ['created_at']
+        indexes = [
+            models.Index(fields=["ticket", "created_at"], name="supportmsg_ticket_created_idx"),
+        ]
 
     def __str__(self):
         return f"{self.sender_type} - {self.message[:50]}"
